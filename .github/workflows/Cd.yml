@@ -1,13 +1,13 @@
-name: CI - Build, Test and Lint
+name: CD - Deploy to Staging
 
 on:
-  pull_request:
+  push:
     branches:
       - main
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     services:
@@ -57,70 +57,57 @@ jobs:
       - name: Lint frontend
         run: cd frontend && npm run lint
 
-      - name: Deploy to Testing EC2
+      - name: Deploy to Staging EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.TESTING_EC2_HOST }}
-          username: ${{ secrets.TESTING_EC2_USER }}
-          key: ${{ secrets.TESTING_EC2_SSH_KEY }}
+          host: ${{ secrets.STAGING_EC2_HOST }}
+          username: ${{ secrets.STAGING_EC2_USER }}
+          key: ${{ secrets.STAGING_EC2_SSH_KEY }}
           script_stop: true
           envs: DEPLOY_BRANCH,REPO_URL
           script: |
             set -e
             export DEBIAN_FRONTEND=noninteractive
-
             echo "== Preflight checks =="
-
             if ! command -v git >/dev/null 2>&1; then
               sudo apt-get update
               sudo apt-get install -y git
             fi
-
             if ! command -v curl >/dev/null 2>&1; then
               sudo apt-get update
               sudo apt-get install -y curl
             fi
-
             if ! command -v node >/dev/null 2>&1 || ! node -v 2>/dev/null | grep -q '^v20\.'; then
               curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
               sudo apt-get install -y nodejs
             fi
-
             if ! command -v npm >/dev/null 2>&1; then
               sudo apt-get install -y npm
             fi
-
             if ! command -v pm2 >/dev/null 2>&1; then
               sudo npm install -g pm2
             fi
-
             echo "== Repo setup =="
-
             if [ ! -d /home/ubuntu/app/.git ]; then
               rm -rf /home/ubuntu/app
               git clone "$REPO_URL" /home/ubuntu/app
             fi
-
             cd /home/ubuntu/app
-
             git fetch origin
             git checkout -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
-
             echo "== Backend install =="
             cd backend
             npm install
-
             echo "== Frontend install and start dev server =="
             cd ../frontend
             npm install
             pm2 delete frontend-dev || true
             pm2 start npm --name frontend-dev --cwd /home/ubuntu/app/frontend -- run dev -- --host 0.0.0.0
-
             echo "== Restart app =="
             cd /home/ubuntu/app
             pm2 delete backend-dev || true
             pm2 start npm --name backend-dev --cwd /home/ubuntu/app/backend -- run dev
             pm2 save
         env:
-          DEPLOY_BRANCH: ${{ github.head_ref || github.ref_name }}
+          DEPLOY_BRANCH: ${{ github.ref_name }}
           REPO_URL: https://github.com/${{ github.repository }}.git
