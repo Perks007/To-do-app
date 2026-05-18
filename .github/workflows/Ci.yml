@@ -110,14 +110,16 @@ jobs:
             cd backend
             npm install
 
-            echo "== Frontend install and build =="
+            echo "== Frontend install and start dev server =="
             cd ../frontend
             npm install
-            npm run build
+            pm2 delete frontend-dev || true
+            pm2 start npm --name frontend-dev --cwd /home/ubuntu/app/frontend -- run dev -- --host 0.0.0.0
 
             echo "== Restart app =="
             cd /home/ubuntu/app
-            pm2 restart app || pm2 start backend/index.js --name app
+            pm2 delete backend-dev || true
+            pm2 start npm --name backend-dev --cwd /home/ubuntu/app/backend -- run dev
             pm2 save
         env:
           DEPLOY_BRANCH: ${{ github.head_ref || github.ref_name }}
