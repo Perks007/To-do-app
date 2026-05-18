@@ -66,17 +66,17 @@ jobs:
         run: cd frontend && npm run lint
 
       # ─── STEP 4: DEPLOY TO TESTING EC2 ──────────────────────────────────────
-      # Uncomment this block once your Testing EC2 is ready and secrets are added
+      
 
-      # - name: Deploy to Testing EC2
-      #   uses: appleboy/ssh-action@v1.0.3
-      #   with:
-      #     host: ${{ secrets.TESTING_EC2_HOST }}
-      #     username: ${{ secrets.TESTING_EC2_USER }}
-      #     key: ${{ secrets.TESTING_EC2_SSH_KEY }}
-      #     script: |
-      #       cd /home/ubuntu/app
-      #       git pull origin ${{ github.head_ref }}
-      #       cd backend && npm install
-      #       cd ../frontend && npm install && npm run build
-      #       pm2 restart all || pm2 start backend/server.js --name app
+      - name: Deploy to Testing EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+           host: ${{ secrets.TESTING_EC2_HOST }}
+           username: ${{ secrets.TESTING_EC2_USER }}
+           key: ${{ secrets.TESTING_EC2_SSH_KEY }}
+           script: |
+             cd /home/ubuntu/app
+             git pull origin ${{ github.head_ref }}
+             cd backend && npm install
+             cd ../frontend && npm install && npm run build
+             pm2 restart all || pm2 start backend/server.js --name app
