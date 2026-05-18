@@ -10,7 +10,6 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    # Spin up a real PostgreSQL container so backend tests can connect
     services:
       postgres:
         image: postgres:16
@@ -26,7 +25,6 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    # These env vars are what your backend db.js will read
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
       PGUSER: postgres
@@ -42,9 +40,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      # ─── STEP 1: BUILD ───────────────────────────────────────────────────────
+          node-version: "20"
 
       - name: Install backend dependencies
         run: cd backend && npm install
@@ -55,28 +51,74 @@ jobs:
       - name: Build frontend
         run: cd frontend && npm run build
 
-      # ─── STEP 2: UNIT TESTS ──────────────────────────────────────────────────
-
       - name: Run backend unit tests
         run: cd backend && npm test
-
-      # ─── STEP 3: LINT ────────────────────────────────────────────────────────
 
       - name: Lint frontend
         run: cd frontend && npm run lint
 
-      # ─── STEP 4: DEPLOY TO TESTING EC2 ──────────────────────────────────────
-      
-
       - name: Deploy to Testing EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-           host: ${{ secrets.TESTING_EC2_HOST }}
-           username: ${{ secrets.TESTING_EC2_USER }}
-           key: ${{ secrets.TESTING_EC2_SSH_KEY }}
-           script: |
-             cd /home/ubuntu/app
-             git pull origin ${{ github.head_ref }}
-             cd backend && npm install
-             cd ../frontend && npm install && npm run build
-             pm2 restart all || pm2 start backend/server.js --name app
+          host: ${{ secrets.TESTING_EC2_HOST }}
+          username: ${{ secrets.TESTING_EC2_USER }}
+          key: ${{ secrets.TESTING_EC2_SSH_KEY }}
+          script_stop: true
+          envs: DEPLOY_BRANCH,REPO_URL
+          script: |
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+
+            echo "== Preflight checks =="
+
+            if ! command -v git >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y git
+            fi
+
+            if ! command -v curl >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y curl
+            fi
+
+            if ! command -v node >/dev/null 2>&1 || ! node -v 2>/dev/null | grep -q '^v20\.'; then
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+            if ! command -v npm >/dev/null 2>&1; then
+              sudo apt-get install -y npm
+            fi
+
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+            fi
+
+            echo "== Repo setup =="
+
+            if [ ! -d /home/ubuntu/app/.git ]; then
+              rm -rf /home/ubuntu/app
+              git clone "$REPO_URL" /home/ubuntu/app
+            fi
+
+            cd /home/ubuntu/app
+
+            git fetch origin
+            git checkout -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
+
+            echo "== Backend install =="
+            cd backend
+            npm install
+
+            echo "== Frontend install and build =="
+            cd ../frontend
+            npm install
+            npm run build
+
+            echo "== Restart app =="
+            cd /home/ubuntu/app
+            pm2 restart app || pm2 start backend/index.js --name app
+            pm2 save
+        env:
+          DEPLOY_BRANCH: ${{ github.head_ref || github.ref_name }}
+          REPO_URL: https://github.com/${{ github.repository }}.git
