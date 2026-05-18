@@ -1,0 +1,180 @@
+name: CD - Deploy to Staging
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: testdb
+      PGHOST: localhost
+      PGPORT: 5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backend dependencies
+        run: cd backend && npm install
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      - name: Build frontend
+        run: cd frontend && npm run build
+
+      - name: Run backend unit tests
+        run: cd backend && npm test
+
+      - name: Lint frontend
+        run: cd frontend && npm run lint
+
+      - name: Deploy to Staging EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_EC2_HOST }}
+          username: ${{ secrets.STAGING_EC2_USER }}
+          key: ${{ secrets.STAGING_EC2_SSH_KEY }}
+          script_stop: true
+          envs: DEPLOY_BRANCH,REPO_URL
+          script: |
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            echo "== Preflight checks =="
+            if ! command -v git >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y git
+            fi
+            if ! command -v curl >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y curl
+            fi
+            if ! command -v node >/dev/null 2>&1 || ! node -v 2>/dev/null | grep -q '^v20\.'; then
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+            if ! command -v npm >/dev/null 2>&1; then
+              sudo apt-get install -y npm
+            fi
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+            fi
+            echo "== Repo setup =="
+            if [ ! -d /home/ubuntu/app/.git ]; then
+              rm -rf /home/ubuntu/app
+              git clone "$REPO_URL" /home/ubuntu/app
+            fi
+            cd /home/ubuntu/app
+            git fetch origin
+            git checkout -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
+            echo "== Backend install =="
+            cd backend
+            npm install
+            echo "== Frontend install and start dev server =="
+            cd ../frontend
+            npm install
+            pm2 delete frontend-dev || true
+            pm2 start npm --name frontend-dev --cwd /home/ubuntu/app/frontend -- run dev -- --host 0.0.0.0
+            echo "== Restart app =="
+            cd /home/ubuntu/app
+            pm2 delete backend-dev || true
+            pm2 start npm --name backend-dev --cwd /home/ubuntu/app/backend -- run dev
+            pm2 save
+        env:
+          DEPLOY_BRANCH: ${{ github.ref_name }}
+          REPO_URL: https://github.com/${{ github.repository }}.git
+
+  # ─── NOTIFY ON SUCCESS ───────────────────────────────────────────────────────
+
+  notify-success:
+    needs: build-and-deploy
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send success email to QA and team
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_APP_PASSWORD }}
+          to: ${{ secrets.INSTRUCTOR_EMAIL }}
+          from: ${{ secrets.EMAIL_USERNAME }}
+          subject: "CD Passed - Staging Environment Updated"
+          body: |
+            Hello,
+
+            The CD pipeline passed successfully. The main branch has been deployed to the Staging environment.
+
+            Triggered by : ${{ github.actor }}
+            Commit       : ${{ github.sha }}
+            Commit Message: ${{ github.event.head_commit.message }}
+
+            You can access the staging environment at: http://${{ secrets.STAGING_EC2_HOST }}
+
+            Regards,
+            GitHub Actions
+
+  # ─── NOTIFY ON FAILURE ───────────────────────────────────────────────────────
+
+  notify-failure:
+    needs: build-and-deploy
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send failure email to developer and instructor
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_APP_PASSWORD }}
+          to: ${{ secrets.INSTRUCTOR_EMAIL }},${{ secrets.DEVELOPER_EMAIL }}
+          from: ${{ secrets.EMAIL_USERNAME }}
+          subject: "CD Failed - Staging Deployment Failed on main"
+          body: |
+            Hello,
+
+            The CD pipeline failed. The staging environment was not updated.
+
+            Triggered by : ${{ github.actor }}
+            Commit       : ${{ github.sha }}
+            Commit Message: ${{ github.event.head_commit.message }}
+
+            Please check the workflow logs for details:
+            ${{ github.server_url }}/${{ github.repository }}/actions
+
+            Regards,
+            GitHub Actions
