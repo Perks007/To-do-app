@@ -1,0 +1,82 @@
+name: CI - Build, Test and Lint
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    # Spin up a real PostgreSQL container so backend tests can connect
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # These env vars are what your backend db.js will read
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: testdb
+      PGHOST: localhost
+      PGPORT: 5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ─── STEP 1: BUILD ───────────────────────────────────────────────────────
+
+      - name: Install backend dependencies
+        run: cd backend && npm install
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      - name: Build frontend
+        run: cd frontend && npm run build
+
+      # ─── STEP 2: UNIT TESTS ──────────────────────────────────────────────────
+
+      - name: Run backend unit tests
+        run: cd backend && npm test
+
+      # ─── STEP 3: LINT ────────────────────────────────────────────────────────
+
+      - name: Lint frontend
+        run: cd frontend && npm run lint
+
+      # ─── STEP 4: DEPLOY TO TESTING EC2 ──────────────────────────────────────
+      # Uncomment this block once your Testing EC2 is ready and secrets are added
+
+      # - name: Deploy to Testing EC2
+      #   uses: appleboy/ssh-action@v1.0.3
+      #   with:
+      #     host: ${{ secrets.TESTING_EC2_HOST }}
+      #     username: ${{ secrets.TESTING_EC2_USER }}
+      #     key: ${{ secrets.TESTING_EC2_SSH_KEY }}
+      #     script: |
+      #       cd /home/ubuntu/app
+      #       git pull origin ${{ github.head_ref }}
+      #       cd backend && npm install
+      #       cd ../frontend && npm install && npm run build
+      #       pm2 restart all || pm2 start backend/server.js --name app
